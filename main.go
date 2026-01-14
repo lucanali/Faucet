@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -25,8 +26,6 @@ type Faucet struct {
 	privateKey    *ecdsa.PrivateKey
 	fromAddress   common.Address
 	chainID       *big.Int
-	gasPrice      *big.Int
-	gasLimit      uint64
 	amount        *big.Int
 	usedAddresses map[string]time.Time
 	mu            sync.RWMutex
@@ -84,12 +83,6 @@ func NewFaucet() (*Faucet, error) {
 		return nil, fmt.Errorf("failed to get chain ID: %v", err)
 	}
 
-	// Get gas price
-	gasPrice, err := client.SuggestGasPrice(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf("failed to get gas price: %v", err)
-	}
-
 	// Get amount from environment (in wei)
 	amountStr := os.Getenv("FAUCET_AMOUNT")
 	if amountStr == "" {
@@ -115,8 +108,6 @@ func NewFaucet() (*Faucet, error) {
 		privateKey:    privateKey,
 		fromAddress:   fromAddress,
 		chainID:       chainID,
-		gasPrice:      gasPrice,
-		gasLimit:      21000, // Standard ETH transfer
 		amount:        amount,
 		usedAddresses: make(map[string]time.Time),
 		cooldown:      time.Duration(cooldownHours) * time.Hour,
@@ -145,13 +136,31 @@ func (f *Faucet) SendTokens(toAddress string) (*types.Transaction, error) {
 		return nil, fmt.Errorf("failed to get nonce: %v", err)
 	}
 
+	// Get gas price
+	gasPrice, err := f.client.SuggestGasPrice(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get gas price: %v", err)
+	}
+
+	// Prepare call message to estimate gas for the actual send transaction
+	to := common.HexToAddress(toAddress)
+	gas, err := f.client.EstimateGas(context.Background(), ethereum.CallMsg{
+		From:  f.fromAddress,
+		To:    &to,
+		Value: f.amount,
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to estimate gas: %v", err)
+	}
+
 	// Create transaction
 	tx := types.NewTransaction(
 		nonce,
 		common.HexToAddress(toAddress),
 		f.amount,
-		f.gasLimit,
-		f.gasPrice,
+		gas,
+		gasPrice,
 		nil,
 	)
 
